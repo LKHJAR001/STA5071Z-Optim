@@ -1,0 +1,1676 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+
+# Linear Programming
+
+## Load Data and Volume Restrictions (Please ensure .csv files in same directory as this .rmd file)
+```{r}
+suppressMessages(suppressWarnings(library(Rglpk)))
+btc_binance <- read.csv("BTCUSDT-1m-2024-08-05.csv", header = F)
+btc_kucoin <- read.csv("BTCUSDT-1m-2024-08-05 kucoin.csv")
+btc_kucoin <- btc_kucoin[ order( btc_kucoin$time ), ]
+
+eth_binance <- read.csv("ETHUSDT-1m-2024-08-05.csv", header = F)
+eth_kucoin <- read.csv("ETHUSDT-1m-2024-08-05 kucoin.csv")
+eth_kucoin <- eth_kucoin[ order( eth_kucoin$time ), ]
+
+
+T <- nrow(btc_binance)
+# M set such that M>>c (any large constant)
+M <- 10000
+Num_crypto <- 2
+num_z <- 2880
+V1 <- 1000
+V2 <- 10000
+```
+
+## Setting up the LP (Please look in report for matrix forms)
+```{r}
+#Objective Function
+my_obj <- c( abs(btc_binance$V5- btc_kucoin$close),  abs(eth_binance$V5- eth_kucoin$close), rep(0, num_z ))
+
+# Liquidity constraint
+my_mat1 <- cbind( diag(1, Num_crypto*T), matrix(0, nrow = Num_crypto*T, ncol = num_z) )
+my_dir1 <- rep("<=", Num_crypto*T)
+L <- c( pmin(btc_binance$V6, btc_kucoin$volume), pmin(eth_binance$V6, eth_kucoin$volume))
+
+
+# Volume constraints
+# BTC and ETH daily volume restrictions
+my_mat2 <- rbind( c( rep(1, T), rep(0, Num_crypto*T+num_z - T) ), c( rep(0, T), rep(1, T), rep(0, Num_crypto*T+num_z - 2*T) ))
+my_dir2 <- rep("<=",nrow(my_mat2))
+V <- c(V1, V2)
+
+
+#One-at-a-Time Constraint Part 1
+my_mat3 <- cbind( diag(2880), M* diag(2880) )
+my_dir3 <- rep("<=", num_z)
+my_rhs3<- rep(M, num_z)
+# Alternate Matrix Creation
+# Only 1 at a time for opening 2hrs (ETH or BTC)
+# my_mat3 <- matrix(0, nrow = num_z, ncol = Num_crypto*T + num_z)
+# for (i in 1:nrow(my_mat3)){
+#   for (j in 1:ncol(my_mat3)){
+#     if (i == j){
+#       my_mat3[i, j] <- 1
+#     }
+#     if(j == (i+num_z)){
+#       my_mat3[i, j] <- M
+#     }
+#   }
+# }
+
+
+#One-at-a-Time Constraint Part 2
+my_mat4 <- cbind( matrix(0, nrow = 1440, ncol = 2880), diag(1440), diag(1440) )
+my_dir4 <- rep("==", num_z/2)
+my_rhs4<- rep(1, num_z/2)
+# Alternate Matrix Creation
+# my_mat4 <- matrix(0, nrow = num_z/2,ncol =Num_crypto*T + num_z )
+# for (i in 1:nrow(my_mat4)){
+#   for (j in 1:ncol(my_mat4)){
+#     if (j == (i+Num_crypto*T) ){
+#       my_mat4[i, j] <- 1
+#     }
+#     if (j == (i+Num_crypto*T + T)){
+#       my_mat4[i, j] <- 1
+#     }
+#   }
+# }
+
+
+# Putting it all together
+my_mat <- rbind(my_mat1, my_mat2, my_mat3, my_mat4)
+my_dir <- c(my_dir1 ,my_dir2, my_dir3, my_dir4)
+my_rhs <- c(L, V, my_rhs3, my_rhs4)
+my_types <-  c( rep("C",Num_crypto*T ), rep("B", num_z) )
+
+#Solution
+sol <- Rglpk_solve_LP(obj = my_obj, mat = my_mat, dir = my_dir, rhs = my_rhs, max = TRUE, types = my_types)
+
+#Max profit achieved
+sol$optimum
+
+
+#Crypto solution Plots below
+# BTC Plots
+time_labels <- sprintf("%02d:%02d", (1:1440 - 1) %/% 60, (1:1440 - 1) %% 60)
+plot.ts(sol$solution[1:1440], xaxt = "n", xlab = '', ylab = "BTC Amount", col ='red')
+axis(1, at = seq(1, 1440, by = 60), labels = time_labels[seq(1, 1440, by = 60)], las = 2)
+plot.ts(abs(btc_binance$V5 - btc_kucoin$close), xaxt = "n", xlab = "", ylab = "Absolute Price Difference of BTC", col = 'blue')
+axis(1, at = seq(1, 1440, by = 60), labels = time_labels[seq(1, 1440, by = 60)], las = 2)
+
+
+# ETH Plots
+time_labels <- sprintf("%02d:%02d", (1:1440 - 1) %/% 60, (1:1440 - 1) %% 60)
+plot.ts(sol$solution[1441:2880], xaxt = "n", xlab = '', ylab = "ETH Amount", col ='red')
+axis(1, at = seq(1, 1440, by = 60), labels = time_labels[seq(1, 1440, by = 60)], las = 2)
+plot.ts(abs(eth_binance$V5 - eth_kucoin$close), xaxt = "n", xlab = "", ylab = "Absolute Price Difference of ETH", col = 'blue')
+axis(1, at = seq(1, 1440, by = 60), labels = time_labels[seq(1, 1440, by = 60)], las = 2)
+
+
+
+```
+
+# Archimedean Goal Programming
+## Load Data
+```{r}
+suppressMessages(suppressWarnings(library(Rglpk)))
+btc_binance <- read.csv("BTCUSDT-1m-2024-08-05.csv", header = F)
+btc_kucoin <- read.csv("BTCUSDT-1m-2024-08-05 kucoin.csv")
+btc_kucoin <- btc_kucoin[ order( btc_kucoin$time ), ]
+
+eth_binance <- read.csv("ETHUSDT-1m-2024-08-05.csv", header = F)
+eth_kucoin <- read.csv("ETHUSDT-1m-2024-08-05 kucoin.csv")
+eth_kucoin <- eth_kucoin[ order( eth_kucoin$time ), ]
+```
+
+
+## Archimedean: An example
+```{r}
+# An example: set weights, volume and profit goals
+w1 <- 0.1
+w2 <- 0.8
+w3 <- 0.1
+# g2
+V1 <- 100
+# g3
+V2 <- 1000
+# g1
+profit <- 100000
+T <- nrow(btc_binance)
+M <- 10000
+Num_crypto <- 2
+num_z <- 2880
+
+# Objective
+my_obj <- c( rep(0, Num_crypto*T+num_z ), 0, w1, w2,0, w3, 0)
+
+# Obj Constraint / Goal 1
+obj_const <- c( abs(btc_binance$V5- btc_kucoin$close),  abs(eth_binance$V5- eth_kucoin$close), rep(0, num_z ), -1, 1, 0, 0, 0, 0)
+dir_obj_const <- "=="
+rhs_obj_const <- profit
+
+# BTC Volume Constraint / Goal 2
+btcvol_const <- c( rep(1, T),  rep(0, T), rep(0, num_z ), 0, 0, -1, 1, 0, 0)
+dir_btcvol_const <- "=="
+rhs_btcvol_const <- V1
+
+# ETH Volume Constraint / Goal 3
+ethvol_const <- c( rep(0, T), rep(1, T), rep(0, num_z ), 0, 0, 0, 0, -1, 1)
+dir_ethvol_const <- "=="
+rhs_ethvol_const <- V2
+
+# Liquidity constraint
+liq_const <- cbind( diag(1, Num_crypto*T), matrix(0, nrow = Num_crypto*T, ncol = num_z), matrix(0, nrow = Num_crypto*T, ncol = 6) )
+dir_liq_const <- rep("<=", Num_crypto*T)
+L <- c( pmin(btc_binance$V6, btc_kucoin$volume), pmin(eth_binance$V6, eth_kucoin$volume))
+
+# One at a time Constraint Part I
+oaat_const_part1<- cbind( diag(2880), M* diag(2880), matrix(0, nrow = 2880, ncol  =6) )
+dir_oaat_const_part1 <- rep("<=", num_z)
+rhs_oaat_const_part1<- rep(M, num_z)
+
+# One at a time Constraint Part II
+oaat_const_part2 <- cbind( matrix(0, nrow = 1440, ncol = 2880), diag(1440), diag(1440), matrix(0, nrow = 1440, ncol  =6) )
+dir_oaat_const_part2 <- rep("==", num_z/2)
+rhs_oaat_const_part2<- rep(1, num_z/2)
+
+#Putting it all together
+my_mat <- rbind(obj_const, btcvol_const, ethvol_const, liq_const, oaat_const_part1, oaat_const_part2)
+my_dir <- c(dir_obj_const,dir_btcvol_const, dir_ethvol_const, dir_liq_const, dir_oaat_const_part1, dir_oaat_const_part2 )
+my_rhs <- c(rhs_obj_const,rhs_btcvol_const, rhs_ethvol_const, L, rhs_oaat_const_part1, rhs_oaat_const_part2 )
+my_types <-  c( rep("C",Num_crypto*T ), rep("B", num_z), rep("C", 6) )
+
+#Solution
+sol <- Rglpk_solve_LP(obj = my_obj, mat = my_mat, dir = my_dir, rhs = my_rhs, max = FALSE, types = my_types)
+
+# Deviations in order d_1+, d_1-, d_2+, d_2-, d_3+, d_3-
+sol$solution[5761:5766]
+# Check to see if One-at-a-time constraint met: 0 if met
+sum( sol$solution[1:1440] * sol$solution[1441:2880])
+
+
+
+# BTC Plots
+time_labels <- sprintf("%02d:%02d", (1:1440 - 1) %/% 60, (1:1440 - 1) %% 60)
+plot.ts(sol$solution[1:1440], xaxt = "n", xlab = '', ylab = "BTC Amount", col ='red')
+axis(1, at = seq(1, 1440, by = 60), labels = time_labels[seq(1, 1440, by = 60)], las = 2)
+plot.ts(abs(btc_binance$V5 - btc_kucoin$close), xaxt = "n", xlab = "", ylab = "Absolute Price Difference of BTC", col = 'blue')
+axis(1, at = seq(1, 1440, by = 60), labels = time_labels[seq(1, 1440, by = 60)], las = 2)
+
+# ETH Plots
+time_labels <- sprintf("%02d:%02d", (1:1440 - 1) %/% 60, (1:1440 - 1) %% 60)
+plot.ts(sol$solution[1441:2880], xaxt = "n", xlab = '', ylab = "ETH Amount", col ='red')
+axis(1, at = seq(1, 1440, by = 60), labels = time_labels[seq(1, 1440, by = 60)], las = 2)
+plot.ts(abs(eth_binance$V5 - eth_kucoin$close), xaxt = "n", xlab = "", ylab = "Absolute Price Difference of ETH", col = 'blue')
+axis(1, at = seq(1, 1440, by = 60), labels = time_labels[seq(1, 1440, by = 60)], las = 2)
+
+
+# BTC Plots for 01:00 to 02:00
+plot.ts(sol$solution[61:120], xaxt = "n", xlab = '', ylab = "BTC Amount", col = 'red')
+axis(1, at = 1:60, labels = time_labels[61:120], las = 2)
+# ETH Plots for 01:00 to 02:00
+plot.ts(sol$solution[1501:1560], xaxt = "n", xlab = '', ylab = "ETH Amount", col ='red')
+axis(1, at = 1:60, labels = time_labels[61:120], las = 2)
+
+
+# Constraints checking
+# c( abs(btc_binance$V5- btc_kucoin$close),  abs(eth_binance$V5- eth_kucoin$close), rep(0, num_z ), 1, 0, 0) %*% sol$solution
+# c( rep(1, T),  rep(0, T), rep(0, num_z ), 0, -1, 0) %*% sol$solution
+# c( rep(0, T), rep(1, T), rep(0, num_z ), 0, 0, -1) %*% sol$solution
+# sum( cbind( diag(1, Num_crypto*T), matrix(0, nrow = Num_crypto*T, ncol = num_z), matrix(0, nrow = Num_crypto*T, ncol = 3) ) %*% sol$solution <= L)
+```
+
+## Archimedean: Sensitivity Analysis (varying the weights w_2 and w_3)
+```{r}
+# Profit goal g_1 always achieved regardless of weight - so just fix w_1
+w1 <- 0.1
+V1 <- 100
+V2 <- 1000
+profit<- 100000
+d2list <- rep(0, 8)
+d3list <- rep(0, 8)
+i<- 1
+for (w2 in seq(0.1, 0.8, by = 0.05)){
+  w3 <- 1 - w1 - w2
+  T <- nrow(btc_binance)
+  M <- 10000
+  Num_crypto <- 2
+  num_z <- 2880
+  my_obj <- c( rep(0, Num_crypto*T+num_z ), 0, w1, w2,0, w3, 0)
+  
+  # Obj Constraint
+  obj_const <- c( abs(btc_binance$V5- btc_kucoin$close),  abs(eth_binance$V5- eth_kucoin$close), rep(0, num_z ), -1, 1, 0, 0, 0, 0)
+  dir_obj_const <- "=="
+  rhs_obj_const <- profit
+  
+  # BTC Volume Constraint
+  btcvol_const <- c( rep(1, T),  rep(0, T), rep(0, num_z ), 0, 0, -1, 1, 0, 0)
+  dir_btcvol_const <- "=="
+  rhs_btcvol_const <- V1
+  
+  # ETH Volume Constraint
+  ethvol_const <- c( rep(0, T), rep(1, T), rep(0, num_z ), 0, 0, 0, 0, -1, 1)
+  dir_ethvol_const <- "=="
+  rhs_ethvol_const <- V2
+  
+  # Liquidity constraint
+  liq_const <- cbind( diag(1, Num_crypto*T), matrix(0, nrow = Num_crypto*T, ncol = num_z), matrix(0, nrow = Num_crypto*T, ncol = 6) )
+  dim(liq_const)
+  dir_liq_const <- rep("<=", Num_crypto*T)
+  L <- c( pmin(btc_binance$V6, btc_kucoin$volume), pmin(eth_binance$V6, eth_kucoin$volume))
+  
+  # One at a time Constraint Part I
+  oaat_const_part1<- cbind( diag(2880), M* diag(2880), matrix(0, nrow = 2880, ncol  =6) )
+  dim( oaat_const_part1 )
+  dir_oaat_const_part1 <- rep("<=", num_z)
+  rhs_oaat_const_part1<- rep(M, num_z)
+  
+  # One at a time Constraint Part II
+  oaat_const_part2 <- cbind( matrix(0, nrow = 1440, ncol = 2880), diag(1440), diag(1440), matrix(0, nrow = 1440, ncol  =6) )
+  dim(oaat_const_part2)
+  dir_oaat_const_part2 <- rep("==", num_z/2)
+  rhs_oaat_const_part2<- rep(1, num_z/2)
+  
+  
+  my_mat <- rbind(obj_const, btcvol_const, ethvol_const, liq_const, oaat_const_part1, oaat_const_part2)
+  my_dir <- c(dir_obj_const,dir_btcvol_const, dir_ethvol_const, dir_liq_const, dir_oaat_const_part1, dir_oaat_const_part2 )
+  my_rhs <- c(rhs_obj_const,rhs_btcvol_const, rhs_ethvol_const, L, rhs_oaat_const_part1, rhs_oaat_const_part2 )
+  my_types <-  c( rep("C",Num_crypto*T ), rep("B", num_z), rep("C", 6) )
+  
+  
+  sol <- Rglpk_solve_LP(obj = my_obj, mat = my_mat, dir = my_dir, rhs = my_rhs, max = FALSE, types = my_types)
+  
+  # Deviations as proportion to volume goals (better if deviation amount is relative to something)
+  d2list[i] <- sol$solution[5761:5766][3]/V1
+  d3list[i] <- sol$solution[5761:5766][5]/V2
+  i <- i+1
+}
+
+
+# Plots of d_2+, d_3+ for varying w_2, w_3
+plot(seq(0.1, 0.8, by = 0.05), d2list, type = "o", col = "red", ylim = c(0, 10),
+     pch = 16, xlab = expression(w[2]),  ylab = "Deviations as Proportion of Volume Constraint")
+lines(seq(0.1, 0.8, by = 0.05), d2list, col = "red", type = "o", pch = 16)
+points(seq(0.1, 0.8, by = 0.05), d3list, col = "blue", type = "o", pch = 16)
+lines(seq(0.1, 0.8, by = 0.05), d3list, col = "blue", type = "o", pch = 16)
+legend("topright", legend = c(expression(d[2]^{"+"} / g[2]), expression(d[3]^{"+"}/g[3]) ),col = c("red", "blue"), pch = 16,lty = 1)
+```
+
+
+
+
+# Tchebychev Goal Programming
+## Load Data
+```{r}
+suppressMessages(suppressWarnings(library(Rglpk)))
+btc_binance <- read.csv("BTCUSDT-1m-2024-08-05.csv", header = F)
+btc_kucoin <- read.csv("BTCUSDT-1m-2024-08-05 kucoin.csv")
+btc_kucoin <- btc_kucoin[ order( btc_kucoin$time ), ]
+
+eth_binance <- read.csv("ETHUSDT-1m-2024-08-05.csv", header = F)
+eth_kucoin <- read.csv("ETHUSDT-1m-2024-08-05 kucoin.csv")
+eth_kucoin <- eth_kucoin[ order( eth_kucoin$time ), ]
+```
+
+## Tchebychev: An example
+```{r}
+# Set weights and volume and profit goals (just as with Archimedean Goal Programming done before)
+w1 <- 0.1
+w2 <- 0.8
+w3 <- 0.1
+profit <- 100000
+V1 <- 100
+V2 <- 1000
+T <- nrow(btc_binance)
+M <- 10000
+Num_crypto <- 2
+num_z <- 2880
+
+# Objective
+my_obj <- c( rep(0, Num_crypto*T+num_z ), 0, 0, 0, 0, 0, 0, 1)
+
+# Delta Constraints
+d1_const <- c( rep(0, 2*T), rep(0, num_z ), 0, -w1, 0, 0, 0, 0, 1)
+dir_d1_const <- ">="
+rhs_d1_const <- 0
+
+d2_const <- c( rep(0, 2*T), rep(0, num_z ), 0, 0, -w2, 0, 0, 0, 1)
+dir_d2_const <- ">="
+rhs_d2_const <- 0
+
+d3_const <- c( rep(0, 2*T), rep(0, num_z ), 0, 0, 0, 0,-w3, 0, 1)
+dir_d3_const <- ">="
+rhs_d3_const <- 0
+
+# Obj Constraint / Goal 1
+obj_const <- c( abs(btc_binance$V5- btc_kucoin$close),  abs(eth_binance$V5- eth_kucoin$close), rep(0, num_z ), -1, 1, 0, 0, 0, 0, 0)
+dir_obj_const <- "=="
+rhs_obj_const <- profit
+
+# BTC Volume Constraint / Goal 2
+btcvol_const <- c( rep(1, T),  rep(0, T), rep(0, num_z ), 0, 0, -1, 1, 0, 0, 0)
+dir_btcvol_const <- "=="
+rhs_btcvol_const <- V1
+
+# ETH Volume Constraint / Goal 3
+ethvol_const <- c( rep(0, T), rep(1, T), rep(0, num_z ), 0, 0, 0, 0, -1, 1, 0)
+dir_ethvol_const <- "=="
+rhs_ethvol_const <- V2
+
+# Liquidity constraint
+liq_const <- cbind( diag(1, Num_crypto*T), matrix(0, nrow = Num_crypto*T, ncol = num_z), matrix(0, nrow = Num_crypto*T, ncol = 7) )
+dir_liq_const <- rep("<=", Num_crypto*T)
+L <- c( pmin(btc_binance$V6, btc_kucoin$volume), pmin(eth_binance$V6, eth_kucoin$volume))
+
+# One at a time Constraint Part I
+oaat_const_part1<- cbind( diag(2880), M* diag(2880), matrix(0, nrow = 2880, ncol  =7) )
+dir_oaat_const_part1 <- rep("<=", num_z)
+rhs_oaat_const_part1<- rep(M, num_z)
+
+# One at a time Constraint Part II
+oaat_const_part2 <- cbind( matrix(0, nrow = 1440, ncol = 2880), diag(1440), diag(1440), matrix(0, nrow = 1440, ncol  =7) )
+dir_oaat_const_part2 <- rep("==", num_z/2)
+rhs_oaat_const_part2<- rep(1, num_z/2)
+
+
+#Putting it all together
+my_mat <- rbind(d1_const, d2_const, d3_const, obj_const, btcvol_const, ethvol_const, liq_const, oaat_const_part1, oaat_const_part2)
+my_dir <- c(dir_d1_const, dir_d2_const, dir_d3_const, dir_obj_const,dir_btcvol_const, dir_ethvol_const, dir_liq_const, dir_oaat_const_part1, dir_oaat_const_part2 )
+my_rhs <- c(rhs_d1_const, rhs_d2_const, rhs_d2_const, rhs_obj_const,rhs_btcvol_const, rhs_ethvol_const, L, rhs_oaat_const_part1, rhs_oaat_const_part2 )
+my_types <-  c( rep("C",Num_crypto*T ), rep("B", num_z), rep("C", 6), "C")
+
+#Solution
+sol <- Rglpk_solve_LP(obj = my_obj, mat = my_mat, dir = my_dir, rhs = my_rhs, max = FALSE, types = my_types)
+# Deviations in order d_1+, d_1-, d_2+, d_2-, d_3+, d_3-
+sol$solution[5761:5766]
+#Delta
+sol$solution[5767]
+# Check One-at-a-time Constraint (supposed to be 0)
+sum(sol$solution[1:1440]*sol$solution[1441:2880])
+
+
+
+# BTC Plots
+time_labels <- sprintf("%02d:%02d", (1:1440 - 1) %/% 60, (1:1440 - 1) %% 60)
+plot.ts(sol$solution[1:1440], xaxt = "n", xlab = '', ylab = "BTC Amount", col ='red')
+axis(1, at = seq(1, 1440, by = 60), labels = time_labels[seq(1, 1440, by = 60)], las = 2)
+plot.ts(abs(btc_binance$V5 - btc_kucoin$close), xaxt = "n", xlab = "", ylab = "Absolute Price Difference of BTC", col = 'blue')
+axis(1, at = seq(1, 1440, by = 60), labels = time_labels[seq(1, 1440, by = 60)], las = 2)
+
+# ETH Plots
+time_labels <- sprintf("%02d:%02d", (1:1440 - 1) %/% 60, (1:1440 - 1) %% 60)
+plot.ts(sol$solution[1441:2880], xaxt = "n", xlab = '', ylab = "ETH Amount", col ='red')
+axis(1, at = seq(1, 1440, by = 60), labels = time_labels[seq(1, 1440, by = 60)], las = 2)
+plot.ts(abs(eth_binance$V5 - eth_kucoin$close), xaxt = "n", xlab = "", ylab = "Absolute Price Difference of ETH", col = 'blue')
+axis(1, at = seq(1, 1440, by = 60), labels = time_labels[seq(1, 1440, by = 60)], las = 2)
+
+# BTC Plots for 01:00 to 02:00
+plot.ts(sol$solution[61:120], xaxt = "n", xlab = '', ylab = "BTC Amount", col = 'red')
+axis(1, at = 1:60, labels = time_labels[61:120], las = 2)
+# ETH Plots for 01:00 to 02:00
+plot.ts(sol$solution[1501:1560], xaxt = "n", xlab = '', ylab = "ETH Amount", col ='red')
+axis(1, at = 1:60, labels = time_labels[61:120], las = 2)
+
+# Constraints Check
+# c( abs(btc_binance$V5- btc_kucoin$close),  abs(eth_binance$V5- eth_kucoin$close), rep(0, num_z ), 1, 0, 0, 0) %*% sol$solution
+# c( rep(1, T),  rep(0, T), rep(0, num_z ), 0, -1, 0, 0) %*% sol$solution
+# c( rep(0, T), rep(1, T), rep(0, num_z ), 0, 0, -1, 0) %*% sol$solution
+# sum( cbind( diag(1, Num_crypto*T), matrix(0, nrow = Num_crypto*T, ncol = num_z), matrix(0, nrow = Num_crypto*T, ncol = 4) ) %*% sol$solution <= L)
+# d3_const %*% sol$solution
+```
+
+## Tchebychev: Sensitivity Analysis
+```{r}
+# Profit goal g_1 not always achieved, so do not fix profit weight w_1 here (remember we fixed w_1 in the Archi sensitivity analysis)
+profit <- 100000
+V1 <- 100
+V2 <- 1000
+
+d1mat <- matrix(NA, nrow = 18, ncol = 18)
+d2mat <- matrix(NA, nrow = 18, ncol = 18)
+d3mat <- matrix(NA, nrow = 18, ncol = 18)
+deltamat <- matrix(NA, nrow = 18, ncol = 18)
+i <- 1
+for (w1 in seq(0.05, 0.9, by = 0.05)){
+  j <- 1
+  for (w2 in seq(0.05, 0.9, by = 0.05)){
+    w3 <- 1 - w1 - w2
+    T <- nrow(btc_binance)
+    M <- 10000
+    Num_crypto <- 2
+    num_z <- 2880
+    
+    my_obj <- c( rep(0, Num_crypto*T+num_z ), 0, 0, 0, 0, 0, 0, 1)
+    
+    # Delta Constraints
+    d1_const <- c( rep(0, 2*T), rep(0, num_z ), 0, -w1, 0, 0, 0, 0, 1)
+    dir_d1_const <- ">="
+    rhs_d1_const <- 0
+    
+    d2_const <- c( rep(0, 2*T), rep(0, num_z ), 0, 0, -w2, 0, 0, 0, 1)
+    dir_d2_const <- ">="
+    rhs_d2_const <- 0
+    
+    d3_const <- c( rep(0, 2*T), rep(0, num_z ), 0, 0, 0, 0,-w3, 0, 1)
+    dir_d3_const <- ">="
+    rhs_d3_const <- 0
+    
+    
+    # Obj Constraint
+    obj_const <- c( abs(btc_binance$V5- btc_kucoin$close),  abs(eth_binance$V5- eth_kucoin$close), rep(0, num_z ), -1, 1, 0, 0, 0, 0, 0)
+    dir_obj_const <- "=="
+    rhs_obj_const <- profit
+    
+    # BTC Volume Constraint
+    btcvol_const <- c( rep(1, T),  rep(0, T), rep(0, num_z ), 0, 0, -1, 1, 0, 0, 0)
+    dir_btcvol_const <- "=="
+    rhs_btcvol_const <- V1
+    
+    # ETH Volume Constraint
+    ethvol_const <- c( rep(0, T), rep(1, T), rep(0, num_z ), 0, 0, 0, 0, -1, 1, 0)
+    dir_ethvol_const <- "=="
+    rhs_ethvol_const <- V2
+    
+    # Liquidity constraint
+    liq_const <- cbind( diag(1, Num_crypto*T), matrix(0, nrow = Num_crypto*T, ncol = num_z), matrix(0, nrow = Num_crypto*T, ncol = 7) )
+    dim(liq_const)
+    dir_liq_const <- rep("<=", Num_crypto*T)
+    L <- c( pmin(btc_binance$V6, btc_kucoin$volume), pmin(eth_binance$V6, eth_kucoin$volume))
+    
+    # One at a time Constraint Part I
+    oaat_const_part1<- cbind( diag(2880), M* diag(2880), matrix(0, nrow = 2880, ncol  =7) )
+    dim( oaat_const_part1 )
+    dir_oaat_const_part1 <- rep("<=", num_z)
+    rhs_oaat_const_part1<- rep(M, num_z)
+    
+    # One at a time Constraint Part II
+    oaat_const_part2 <- cbind( matrix(0, nrow = 1440, ncol = 2880), diag(1440), diag(1440), matrix(0, nrow = 1440, ncol  =7) )
+    dim(oaat_const_part2)
+    dir_oaat_const_part2 <- rep("==", num_z/2)
+    rhs_oaat_const_part2<- rep(1, num_z/2)
+    
+    
+    my_mat <- rbind(d1_const, d2_const, d3_const, obj_const, btcvol_const, ethvol_const, liq_const, oaat_const_part1, oaat_const_part2)
+    dim(my_mat)
+    my_dir <- c(dir_d1_const, dir_d2_const, dir_d3_const, dir_obj_const,dir_btcvol_const, dir_ethvol_const, dir_liq_const, dir_oaat_const_part1, dir_oaat_const_part2 )
+    my_rhs <- c(rhs_d1_const, rhs_d2_const, rhs_d2_const, rhs_obj_const,rhs_btcvol_const, rhs_ethvol_const, L, rhs_oaat_const_part1, rhs_oaat_const_part2 )
+    my_types <-  c( rep("C",Num_crypto*T ), rep("B", num_z), rep("C", 6), "C")
+    
+    sol <- Rglpk_solve_LP(obj = my_obj, mat = my_mat, dir = my_dir, rhs = my_rhs, max = FALSE, types = my_types)
+
+    # Ensure w1+w2+w3 = 1 else NA
+    if (w2+w1 >= 1){
+      d1mat[i, j] <- NA
+      d2mat[i, j] <- NA
+      d3mat[i, j] <- NA
+    }else{
+      # Ensure deviations relative to goals (better to have a relative figure)
+      d1mat[i, j] <- sol$solution[5761:5766][2]/profit
+      d2mat[i, j] <- sol$solution[5761:5766][3]/V1
+      d3mat[i, j] <- sol$solution[5761:5766][5]/V2
+      # Delta
+      deltamat[i, j] <- sol$solution[5767]
+    }
+    j<- j+1
+  }
+  i<- i+1
+}
+
+# Contour plots of d_1-, d_2+, d_3+, delta respectively:
+suppressWarnings(suppressMessages(library(fields)))
+image.plot(seq(0.05, 0.9, by = 0.05), seq(0.05, 0.9, by = 0.05), t(d1mat), xlab = expression(w[2]), ylab = expression(w[1]))
+image.plot(seq(0.05, 0.9, by = 0.05), seq(0.05, 0.9, by = 0.05), t(d2mat), xlab = expression(w[2]), ylab = expression(w[1]))
+image.plot(seq(0.05, 0.9, by = 0.05),seq(0.05, 0.9, by = 0.05), t(d3mat), xlab = expression(w[2]), ylab = expression(w[1]))
+image.plot(seq(0.05, 0.9, by = 0.05),seq(0.05, 0.9, by = 0.05), t(deltamat), xlab = expression(w[2]), ylab = expression(w[1]))
+```
+
+
+
+
+# Simulated Annealing
+## Load data and Volume Restrictions
+```{r}
+# Load Data
+suppressMessages(suppressWarnings(library(Rglpk)))
+btc_binance <- read.csv("BTCUSDT-1m-2024-08-05.csv", header = F)
+btc_kucoin <- read.csv("BTCUSDT-1m-2024-08-05 kucoin.csv")
+btc_kucoin <- btc_kucoin[ order( btc_kucoin$time ), ]
+
+eth_binance <- read.csv("ETHUSDT-1m-2024-08-05.csv", header = F)
+eth_kucoin <- read.csv("ETHUSDT-1m-2024-08-05 kucoin.csv")
+eth_kucoin <- eth_kucoin[ order( eth_kucoin$time ), ]
+
+# Liquidity specs
+L1 <- pmin(btc_binance$V6, btc_kucoin$volume)
+L2 <- pmin(eth_binance$V6, eth_kucoin$volume)
+# Price specs
+price <- c( abs(btc_binance$V5- btc_kucoin$close),  abs(eth_binance$V5- eth_kucoin$close) ) 
+T <- nrow(btc_binance)
+# Daily Volume specs
+V1 <- 1000
+V2 <- 10000
+```
+
+## SA functions (look in report for detailed algorithms)
+```{r}
+# Inital solution
+initial_x <- function(V1, V2, L1, L2){
+  x_eth<- matrix(0, nrow = T, ncol = 1)
+  x_btc <- matrix(0, nrow = T, ncol =1)
+  inds_used <- c()
+  # Run until daily volume constraints for both BTC and ETH are met
+  while(  sum(x_eth) < 0.999*V2 | sum(x_btc) < 0.999*V1   ){
+    # Pick either ETH or BTC
+    which <- runif(1)
+    # If ETH picked
+    if (which < 0.5 & sum(x_eth) < V2 ){
+      # Randomly select index
+      ind <- sample(1:1440, 1)
+      # Check if index has not been used
+      if (!(ind %in% inds_used)){
+        # Set ETH at that index x_{2, t} to maximum liquidity at that index L_{2, t}
+        x_eth[ind] <- L2[ind]
+        # Store indices used
+        inds_used <- c(inds_used, ind)
+        # Shave-off maximum liquidity if daily volume constraint is exceeded for ETH
+        if (sum(x_eth) > V2){
+          k <- 1
+          while (sum(x_eth) > V2){
+            x_eth[ind] <- (100- k/100)/100 * L2[ind] 
+            k <- k +1
+          }
+        }
+      }
+    }
+    # Same logic as before, for BTC:
+    if (which >= 0.5 & sum(x_btc) < V1 ){
+      ind <- sample(1:1440, 1)
+      if (!(ind %in% inds_used)){
+        x_btc[ind] <- L1[ind]
+        inds_used <- c(inds_used, ind)
+        if (sum(x_btc) > V1){
+          l <- 1
+          while (sum(x_btc) > V1){
+            x_btc[ind] <- (100- l/100)/100 * L1[ind] 
+            l <- l +1
+          }
+        }
+      }
+    }
+  }
+  return (c(x_btc, x_eth))
+}
+
+# # Checking Constraints
+# x_init <- initial_x(V1, V2, L1, L2)
+# x_btc <- x_init[1:1440]
+# x_eth <- x_init[1441:2880]
+# # One-at-time Constraint (supposed to be 0)
+# sum(x_btc * x_eth)
+# # Daily BTC Volume Constraint (<= V1)
+# sum(x_btc)
+# # Daily ETH Volume Constraint (<= V2)
+# sum(x_eth)
+
+
+# Perturb Solution
+perturb_x <- function(n, V1, V2, L1, L2, x){
+  x_eth<- x[1441:2880]
+  x_btc <- x[1:1440]
+  eth_profits <- x_eth * price[1441:2880]
+  btc_profits <- x_btc * price[1:1440]
+  # Choose random indices for each crypto to zero out ie. x_{i, t} = 0 for random t 
+  eth_rands <- sample(1:1440, n*1440, replace = FALSE)
+  btc_rands <- sample(1:1440, n*1440, replace = FALSE)
+  x_eth[eth_rands] <- 0
+  x_btc[btc_rands] <- 0
+  # Store used indices ie. store t for which x_{i, t} > 0
+  inds_used <- c(which(x_btc > 0), which(x_eth>0))
+  # Run until daily volume constraints for both BTC and ETH are met
+  while(  sum(x_eth) < 0.999*V2 | sum(x_btc) < 0.999*V1   ){
+    # Choose either ETH or BTC 
+    which <- runif(1)
+    # If ETH picked
+    if (which < 0.5 & sum(x_eth) < V2 ){
+      # Choose random index t
+      ind <- sample(1:1440, 1)
+      # Ensure random index t has not been used before
+      if (!(ind %in% inds_used)){
+        # Set ETH at that index x_{2, t} to maximum liquidity at that index L_{2, t}
+        x_eth[ind] <- L2[ind]
+        # Store indices used
+        inds_used <- c(inds_used, ind)
+        # Shave-off maximum liquidity if daily volume constraint is exceeded for ETH
+        if (sum(x_eth) > V2){
+          k <- 1
+          while (sum(x_eth) > V2){
+            x_eth[ind] <- (100- k/100)/100 * L2[ind] 
+            k <- k +1
+          }
+        }
+      }
+    }
+    # Same logic for BTC
+    if (which >= 0.5 & sum(x_btc) < V1 ){
+      ind <- sample(1:1440, 1)
+      if (!(ind %in% inds_used)){
+        x_btc[ind] <- L1[ind]
+        inds_used <- c(inds_used, ind)
+        if (sum(x_btc) > V1){
+          l <- 1
+          while (sum(x_btc) > V1){
+            x_btc[ind] <- (100- l/100)/100 * L1[ind] 
+            l <- l +1
+          }
+        }
+      }
+    }
+  }
+  return (c(x_btc, x_eth))
+}
+
+
+# Evaluate Solution
+evaluate_x <- function(x, price){
+  # Merely price times solution
+  price %*% x
+}
+```
+
+
+## SA Example ('comment out' which cooling schedule to not use: either geometric or logarithmic)
+```{r}
+# An example
+cur_x <- initial_x(V1, V2, L1, L2)
+cur_fx <- evaluate_x(cur_x, price)
+runs <- 1e4
+start_temp <- 0.5
+temp_factor <- 0.99
+all_fx <- c()
+all_x <- matrix(NA, nrow = runs, ncol  =2880)
+# For a fixed number of iterations
+for(i in 1:runs){
+  # Generate a candidate solution
+  prop_x <- perturb_x(n = 0.25, V1, V2, L1, L2, x = cur_x)
+  # evaluate the candidate solution
+  prop_fx <- evaluate_x(prop_x, price)
+  # Geometric cooling schedule
+  anneal_temp <- start_temp * temp_factor ^ i
+  
+  # Logarithmic cooling schedule
+  # anneal_temp <- start_temp / (1+ temp_factor*log(1+i))
+  
+  # Calculate the probability of accepting the candidate
+  accept_prob <- exp((prop_fx - cur_fx) / anneal_temp)
+  # Accept or Reject the candidate
+  if(prop_fx > cur_fx){
+    cur_x <- prop_x
+    cur_fx <- prop_fx
+  }
+  else{ if(runif(1) < accept_prob){
+    cur_x <- prop_x
+    cur_fx <- prop_fx
+  }}
+  # Store all results
+  all_fx <- c(all_fx, cur_fx)
+  all_x[i, ]<-cur_x
+}
+
+# Convergence plots
+plot(all_fx,type="l", ylab = "f(x)")
+      
+
+# BTC Plots
+time_labels <- sprintf("%02d:%02d", (1:1440 - 1) %/% 60, (1:1440 - 1) %% 60)
+plot.ts(all_x[runs, 1:1440], xaxt = "n", xlab = '', ylab = "BTC Amount", col ='red')
+axis(1, at = seq(1, 1440, by = 60), labels = time_labels[seq(1, 1440, by = 60)], las = 2)
+
+# ETH Plots
+time_labels <- sprintf("%02d:%02d", (1:1440 - 1) %/% 60, (1:1440 - 1) %% 60)
+plot.ts(all_x[runs, 1441:2880], xaxt = "n", xlab = '', ylab = "ETH Amount", col ='red')
+axis(1, at = seq(1, 1440, by = 60), labels = time_labels[seq(1, 1440, by = 60)], las = 2)
+```
+
+## SA Sensitivity Analysis - Varying n 
+```{r}
+# Sensitivity Analysis - Varying n
+init_x <- initial_x(V1, V2, L1, L2)
+init_fx <- evaluate_x(cur_x, price)
+runs <- 1e3
+# Fix T0 and alpha
+start_temp <- 0.5
+temp_factor <- 0.99
+nlist <- c(0.2, 0.4, 0.6, 0.8, 1)
+fx_mat <- matrix(NA, nrow = 1, length(nlist))
+j <- 1
+for (n in nlist){
+  all_fx <- c()
+  cur_x <- init_x
+  cur_fx <- init_fx
+  for(i in 1:runs){
+    # Generate a candidate solution
+    prop_x <- perturb_x(n = n, V1, V2, L1, L2, x = cur_x)
+    # evaluate the candidate solution
+    prop_fx <- evaluate_x(prop_x, price)
+    # Geometric cooling schedule
+    anneal_temp <- start_temp * temp_factor ^ i
+    
+    # Logarithmic cooling schedule
+    # anneal_temp <- start_temp / (1+ temp_factor*log(1+i))
+    
+    # Calculate the probability of accepting the candidate
+    accept_prob <- exp((prop_fx - cur_fx) / anneal_temp)
+    # Accept or Reject the candidate
+    if(prop_fx > cur_fx){
+      cur_x <- prop_x
+      cur_fx <- prop_fx
+    }
+    else{ if(runif(1) < accept_prob){
+      cur_x <- prop_x
+      cur_fx <- prop_fx
+    }}
+    # Store all results
+    all_fx <- c(all_fx, cur_fx)
+  }
+  fx_mat[1, j] <- max(all_fx) 
+  j <- j+1
+}
+
+# Convergence plots
+plot(nlist, fx_mat[1, ], type = 'l',lty = 2, lwd = 2,  col = 'blue', xlab  = expression(frac(n, T)), ylab = 'Maximum Profit f(x)')
+points(nlist, fx_mat[1, ], pch = 20, cex = 2, col = 'blue')
+```
+
+# SA Sensitivity Analysis - varying T0 and alpha (choose whether geometric or log cooling)
+```{r}
+# Sensitivity Analysis - varying T0 and alpha (choose whether geometric or log cooling)
+init_x <- initial_x(V1, V2, L1, L2)
+init_fx <- evaluate_x(init_x, price)
+runs <- 1e3
+start_temps <- c(25, 50, 75, 100)
+temp_factors <- c(0.5, 0.65, 0.8, 0.95) 
+fx_mat <- matrix(NA, nrow = length(start_temps), ncol = length(temp_factors))
+j<- 1
+for (start_temp in start_temps){
+  k <- 1
+  for (temp_factor in temp_factors){
+    # For a fixed number of iterations
+    all_fx <- c()
+    # Ensure we start with same starting values
+    cur_x <- init_x
+    cur_fx <- init_fx
+    for(i in 1:runs){
+      # Generate a candidate solution
+      prop_x <- perturb_x(n = 0.25, V1, V2, L1, L2, x = cur_x)
+      # evaluate the candidate solution
+      prop_fx <- evaluate_x(prop_x, price)
+      # Geometric cooling schedule
+      anneal_temp <- start_temp * temp_factor ^ i
+       
+      # Logarithmic cooling schedule
+      # anneal_temp <- start_temp / (1+ temp_factor*log(1+i))
+      
+      # Calculate the probability of accepting the candidate
+      accept_prob <- exp((prop_fx - cur_fx) / anneal_temp)
+      # Accept or Reject the candidate
+      if(prop_fx > cur_fx){
+        cur_x <- prop_x
+        cur_fx <- prop_fx
+      }
+      else{ if(runif(1) < accept_prob){
+        cur_x <- prop_x
+        cur_fx <- prop_fx
+      }}
+      # Store all results
+      all_fx <- c(all_fx, cur_fx)
+    }
+    fx_mat[j, k] <- max(all_fx)
+    k <- k+1
+  }
+  j <- j+1
+}
+
+
+# Contour Plots of Maximum Profit Objective
+suppressWarnings(suppressMessages(library(fields)))
+col_means <- apply(fx_mat, 2, mean)
+row_means <- apply(fx_mat, 1, mean)
+fx_mat_with_means <- rbind(fx_mat, col_means)   
+fx_mat_with_means <- cbind(fx_mat_with_means, c(row_means, mean(col_means)))
+fx_mat_with_means[5, 5] <- NA
+image.plot(fx_mat_with_means, xlab = expression(T[0]), ylab = expression(alpha),
+           yaxt = 'n', xaxt = 'n')
+axis(2, at = seq(0, 1, length.out = 5), labels = c(temp_factors, "Mean"))
+axis(1, at = seq(0, 1, length.out = 5), labels = c(start_temps, "Mean"))
+for (i in 1:5) {
+  for (j in 1:5) {
+    text(x = (j - 1) / 4, y = (i - 1) / 4, labels = round(fx_mat_with_means[j, i]), col = "black")
+  }
+}
+```
+
+# SA Sensitivity Analysis - comparing geometric and log cooling (same T0 and alpha)
+```{r}
+# Sensitivity Analysis - comparing geometric and log cooling (same T0 and alpha)
+init_x <- initial_x(V1, V2, L1, L2)
+init_fx <- evaluate_x(init_x, price)
+cur_x_geo <- init_x
+cur_fx_geo <- init_fx
+cur_x_log <- init_x
+cur_fx_log <- init_fx
+
+runs <- 1e3
+start_temp <- 10
+temp_factor <- 0.99
+all_fx_geo <- c()
+all_x_geo <- matrix(NA, nrow = runs, ncol  =2880)
+all_fx_log <- c()
+all_x_log <- matrix(NA, nrow = runs, ncol  =2880)
+# For a fixed number of iterations
+for(i in 1:runs){
+  # Generate a candidate solution
+  prop_x_geo <- perturb_x(n = 0.25, V1, V2, L1, L2, x = cur_x_geo)
+  # evaluate the candidate solution
+  prop_fx_geo <- evaluate_x(prop_x_geo, price)
+  # Geometric cooling schedule
+  anneal_temp_geo <- start_temp * temp_factor ^ i
+  
+  # Calculate the probability of accepting the candidate
+  accept_prob <- exp((prop_fx_geo - cur_fx_geo) / anneal_temp_geo)
+  # Accept or Reject the candidate
+  if(prop_fx_geo > cur_fx_geo){
+    cur_x_geo <- prop_x_geo
+    cur_fx_geo <- prop_fx_geo
+  }
+  else{ if(runif(1) < accept_prob){
+    cur_x_geo <- prop_x_geo
+    cur_fx_geo <- prop_fx_geo
+  }}
+  # Store all results
+  all_fx_geo <- c(all_fx_geo, cur_fx_geo)
+  all_x_geo[i, ]<-cur_x_geo
+  
+  # Generate a candidate solution
+  prop_x_log <- perturb_x(n = 0.25, V1, V2, L1, L2, x = cur_x_log)
+  # evaluate the candidate solution
+  prop_fx_log <- evaluate_x(prop_x_log, price)
+  
+  # Logarithmic cooling schedule
+  anneal_temp_log <- start_temp / (1+ temp_factor*log(1+i))
+  # Calculate the probability of accepting the candidate
+  accept_prob <- exp((prop_fx_log - cur_fx_log) / anneal_temp_log)
+  # Accept or Reject the candidate
+  if(prop_fx_log > cur_fx_log){
+    cur_x_log <- prop_x_log
+    cur_fx_log <- prop_fx_log
+  }
+  else{ if(runif(1) < accept_prob){
+    cur_x_log <- prop_x_log
+    cur_fx_log <- prop_fx_log
+  }}
+  # Store all results
+  all_fx_log <- c(all_fx_log, cur_fx_log)
+  all_x_log[i, ]<-cur_x_log
+}
+
+# Convergence Plots
+plot(all_fx_geo[1:runs],type="l", ylab = "Maximum Profit f(x)", xlab = 'Iteration', col = 'blue', lwd = 3)
+points(all_fx_log[1:runs],type="l", ylab = "Maximum Profit f(x)", xlab = 'Iteration', col = 'red', lwd =3)
+legend("bottomright", legend = c("Geometric", "Logarithmic"), 
+       col = c("blue", "red"), lty = 1, lwd = 3)
+
+
+# BTC Plots
+time_labels <- sprintf("%02d:%02d", (1:1440 - 1) %/% 60, (1:1440 - 1) %% 60)
+plot.ts(all_x_geo[1e4, 1:1440], xaxt = "n", xlab = '', ylab = "BTC Amount", col ='red')
+axis(1, at = seq(1, 1440, by = 60), labels = time_labels[seq(1, 1440, by = 60)], las = 2)
+plot.ts(all_x_log[1e4, 1:1440], xaxt = "n", xlab = '', ylab = "BTC Amount", col ='red')
+axis(1, at = seq(1, 1440, by = 60), labels = time_labels[seq(1, 1440, by = 60)], las = 2)
+
+# ETH Plots
+time_labels <- sprintf("%02d:%02d", (1:1440 - 1) %/% 60, (1:1440 - 1) %% 60)
+plot.ts(all_x_geo[1e4, 1441:2880], xaxt = "n", xlab = '', ylab = "ETH Amount", col ='red')
+axis(1, at = seq(1, 1440, by = 60), labels = time_labels[seq(1, 1440, by = 60)], las = 2)
+plot.ts(all_x_log[1e4, 1441:2880], xaxt = "n", xlab = '', ylab = "ETH Amount", col ='red')
+axis(1, at = seq(1, 1440, by = 60), labels = time_labels[seq(1, 1440, by = 60)], las = 2)
+```
+
+
+# SA Sensitivity Analysis - comparing geometric and log cooling (same T0 and alpha) many runs
+```{r}
+# Sensitivity Analysis - comparing geometric and log cooling (same T0 and alpha) but will average over each of the 10 sims
+init_x <- initial_x(V1, V2, L1, L2)
+init_fx <- evaluate_x(init_x, price)
+
+runs <- 1e3
+sims <- 10
+start_temp <- 10
+temp_factor <- 0.99
+all_fx_geo <- matrix(NA, nrow = sims, ncol = runs)
+all_fx_log <- matrix(NA, nrow = sims, ncol = runs)
+
+for (j in 1:sims){
+  # For a fixed number of iterations
+  cur_x_geo <- init_x
+  cur_fx_geo <- init_fx
+  cur_x_log <- init_x
+  cur_fx_log <- init_fx
+  for(i in 1:runs){
+    # Generate a candidate solution
+    prop_x_geo <- perturb_x(n = 0.25, V1, V2, L1, L2, x = cur_x_geo)
+    # evaluate the candidate solution
+    prop_fx_geo <- evaluate_x(prop_x_geo, price)
+    # Geometric cooling schedule
+    anneal_temp_geo <- start_temp * temp_factor ^ i
+    
+    # Calculate the probability of accepting the candidate
+    accept_prob <- exp((prop_fx_geo - cur_fx_geo) / anneal_temp_geo)
+    # Accept or Reject the candidate
+    if(prop_fx_geo > cur_fx_geo){
+      cur_x_geo <- prop_x_geo
+      cur_fx_geo <- prop_fx_geo
+    }
+    else{ if(runif(1) < accept_prob){
+      cur_x_geo <- prop_x_geo
+      cur_fx_geo <- prop_fx_geo
+    }}
+    # Store all results
+    all_fx_geo[j, i] <- cur_fx_geo
+    
+    # Generate a candidate solution
+    prop_x_log <- perturb_x(n = 0.25, V1, V2, L1, L2, x = cur_x_log)
+    # evaluate the candidate solution
+    prop_fx_log <- evaluate_x(prop_x_log, price)
+    
+    # Logarithmic cooling schedule
+    anneal_temp_log <- start_temp / (1+ temp_factor*log(1+i))
+    # Calculate the probability of accepting the candidate
+    accept_prob <- exp((prop_fx_log - cur_fx_log) / anneal_temp_log)
+    # Accept or Reject the candidate
+    if(prop_fx_log > cur_fx_log){
+      cur_x_log <- prop_x_log
+      cur_fx_log <- prop_fx_log
+    }
+    else{ if(runif(1) < accept_prob){
+      cur_x_log <- prop_x_log
+      cur_fx_log <- prop_fx_log
+    }}
+    # Store all results
+    all_fx_log[j, i] <- cur_fx_log
+  }
+}
+
+
+# Convergence Plots
+plot(all_fx_geo[1,], ylab = "Maximum Profit f(x)", xlab = 'Iteration', col = 'blue', lwd = 3, type = 'l', ylim = c(min(all_fx_geo), max(all_fx_geo)))
+for (i in 1:sims){
+  lines(all_fx_geo[i, 1:runs],type="l", col = 'blue', lwd = 0.1)
+  lines(all_fx_log[i, 1:runs],type="l", col = 'red', lwd = 0.1)
+}
+legend("bottomright", legend = c("Geometric", "Logarithmic"), col = c("blue", "red"), lty = 1, lwd = c(3, 3)) 
+
+# Mean over 10 sims
+plot(apply(all_fx_geo, 2, mean), ylab = "Maximum Profit f(x)", xlab = 'Iteration', col = 'blue', lwd = 3, type = 'l', ylim = c(min(all_fx_geo), max(all_fx_geo)))
+lines(apply(all_fx_log, 2, mean), col = 'red', lwd = 3, type = 'l')
+legend("bottomright", legend = c("Geometric", "Logarithmic"), col = c("blue", "red"), lty = 1, lwd = c(3, 3)) 
+
+
+
+```
+
+
+
+# Genetic Algorithms
+## Load data and Volume Restrictions
+```{r}
+suppressMessages(suppressWarnings(library(Rglpk)))
+btc_binance <- read.csv("BTCUSDT-1m-2024-08-05.csv", header = F)
+btc_kucoin <- read.csv("BTCUSDT-1m-2024-08-05 kucoin.csv")
+btc_kucoin <- btc_kucoin[ order( btc_kucoin$time ), ]
+
+eth_binance <- read.csv("ETHUSDT-1m-2024-08-05.csv", header = F)
+eth_kucoin <- read.csv("ETHUSDT-1m-2024-08-05 kucoin.csv")
+eth_kucoin <- eth_kucoin[ order( eth_kucoin$time ), ]
+
+
+L1 <- pmin(btc_binance$V6, btc_kucoin$volume)
+L2 <- pmin(eth_binance$V6, eth_kucoin$volume)
+price <- c( abs(btc_binance$V5- btc_kucoin$close),  abs(eth_binance$V5- eth_kucoin$close) ) 
+T <- nrow(btc_binance)
+V1 <- 1000
+V2 <- 10000
+```
+
+## GA functions (look in report for detailed algorithms)
+```{r}
+# Preliminary Functions Created:
+# Same function as with SA
+initial_x <- function(V1, V2, L1, L2){
+  x_eth<- matrix(0, nrow = T, ncol = 1)
+  x_btc <- matrix(0, nrow = T, ncol =1)
+  inds_used <- c()
+  # Run until daily volume constraints for both BTC and ETH are met
+  while(  sum(x_eth) < 0.999*V2 | sum(x_btc) < 0.999*V1   ){
+    # Pick either ETH or BTC
+    which <- runif(1)
+    # If ETH picked
+    if (which < 0.5 & sum(x_eth) < V2 ){
+      # Randomly select index
+      ind <- sample(1:1440, 1)
+      # Check if index has not been used
+      if (!(ind %in% inds_used)){
+        # Set ETH at that index x_{2, t} to maximum liquidity at that index L_{2, t}
+        x_eth[ind] <- L2[ind]
+        # Store indices used
+        inds_used <- c(inds_used, ind)
+        # Shave-off maximum liquidity if daily volume constraint is exceeded for ETH
+        if (sum(x_eth) > V2){
+          k <- 1
+          while (sum(x_eth) > V2 ){
+            x_eth[ind] <- (100- k/100)/100 * L2[ind] 
+            k <- k +1
+          }
+        }
+      }
+    }
+    # Same logic as before, for BTC:
+    if (which >= 0.5 & sum(x_btc) < V1 ){
+      ind <- sample(1:1440, 1)
+      if (!(ind %in% inds_used)){
+        x_btc[ind] <- L1[ind]
+        inds_used <- c(inds_used, ind)
+        if (sum(x_btc) > V1){
+          l <- 1
+          while (sum(x_btc) > V1 ){
+            x_btc[ind] <- (100- l/100)/100 * L1[ind] 
+            l <- l +1
+          }
+        }
+      }
+    }
+  }
+  return (c(x_btc, x_eth))
+}
+
+
+# Same evaluate function as with SA
+evaluate_x <- function(x, price){
+  price %*% x
+}
+
+
+# Just a function to check constraints of a given solution: constraints met if function returns (0, 0, V1, V2, 0, eval)
+check <- function(sol){
+  return (c(sum(sol[1:1440] > L1), sum(sol[1441:2880] > L2), sum(sol[1:1440]), sum(sol[1441:2880]), sum(sol[1:1440] * sol[1441:2880]), evaluate_x(sol, price) ))
+}
+
+# Function to incrementally 'shave-off' value at t in x_{1, t}
+daily_vol_btc <- function(x_btc, ind){
+  for (ind in ind){
+    if (x_btc[ind] >0){
+      l <- 1
+      while (sum(x_btc) > V1 & l<= 100){
+        x_btc[ind] <- (100- l)/100 * L1[ind] 
+        l <- l +1
+      }
+    }
+  }
+  return (x_btc)
+}
+
+# Function to incrementally 'shave-off' value at t in x_{2, t}
+daily_vol_eth <- function(x_eth, ind){
+    for (ind in ind){
+      if (x_eth[ind] >0){
+        l <- 1
+        while (sum(x_eth) > V2 & l<=100){
+          x_eth[ind] <- (100- l)/100 * L2[ind] 
+          l <- l +1
+        }
+      }
+    }
+  return (x_eth)
+}
+
+
+
+
+
+# GA functions created:
+
+# Generate initial population of solutions (given number of variables and size of pop)
+initial_pop <-  function(varsize = 2880,popsize = 100, V1, V2, L1, L2){
+  pop0 <- matrix(NA, nrow = popsize, ncol = varsize)
+  for (i in 1:popsize){
+    pop0[i, ] <- initial_x(V1, V2, L1, L2)
+  }
+  return(pop0)
+}
+
+
+#Evaluation Value taken as total profit achieved for given solution, but penalized for deviating from daily volume restrictions
+evaluate_pop <- function(pop, price){
+  evals <- rep(NA, length(pop[, 1]))
+  for (i in 1: length(evals)){
+    x_btc <- pop[i, 1:1440]
+    x_eth <- pop[i, 1441:2880]
+    evals[i] <- (sum(x_btc)/V1)^10 *  (sum(x_eth)/V2)^10*  evaluate_x(pop[i, ], price)
+  }
+  return (evals)
+}
+
+
+# Selection (outputs = parents) 
+# Proportional to fitness
+select <- function(pop,fitness){
+  newpop <- matrix(NA, dim(pop)[1], dim(pop)[2])
+  picks <- sample(1:dim(pop)[1], prob = fitness, replace = T)
+  for(i in 1:length(picks)){
+    newpop[i, ] <- pop[picks[i], ]
+  }
+  return(newpop)  
+}
+
+
+# Informal selection (picking random k members)
+select_informal <- function(pop){
+    # Initialize a new population matrix with NA values
+    newpop <- matrix(NA, nrow = dim(pop)[1], ncol = dim(pop)[2])
+    # Helper function to check how many rows in newpop are fully populated
+    check_size <- function(newpop) {
+        sum(apply(newpop, 1, function(x) !any(is.na(x))))
+    }
+    # Continue until newpop is fully populated
+    while (check_size(newpop) < dim(pop)[1]) {
+        # Select 1/10 of the population size as k members to randomly select
+        k <- ceiling(dim(pop)[1] / 10)
+        # Randomly pick k members
+        picks <- sample(1:dim(pop)[1], size = k, replace = FALSE)
+        subpop <- pop[picks, ]
+        # Select best half of k members to add to new population 
+        sorted_indices <- order(evaluate_pop(subpop, price), decreasing = TRUE)
+        # Determine how many individuals can be added without exceeding the newpop size
+        slots_left <- dim(pop)[1] - check_size(newpop)
+        num_to_add <- min(k/2, slots_left)
+        # Add the selected individuals to the new population
+        newpop[(check_size(newpop)+1):(check_size(newpop)+num_to_add), ] <- subpop[sorted_indices[1:num_to_add], ]
+    }
+    return(newpop)
+}
+
+  
+# Recombination
+# Uniform crossover
+crossover_uni  <- function(parents){
+  varsize  <- dim(parents)[2]
+  popsize <- dim(parents)[1]
+  parent_pairs <- matrix(sample(1:popsize), popsize/2, 2)
+  # Initialise offspring
+  offsprings <- matrix(NA, popsize, varsize)
+  for(i in 1:dim(parent_pairs)[1]){
+    # Get parents
+    p1 = parents[parent_pairs[i,][1], ]
+    p2 = parents[parent_pairs[i,][2], ]
+    # Split parents solutions to BTC and ETH (to ensure we retain the matching indices between crypto)
+    p1_btc <- p1[1:1440]
+    p1_eth <- p1[1441:2880]
+    p2_btc <- p2[1:1440]
+    p2_eth <- p2[1441:2880]
+    # Make kids
+    c1_btc <- rep(0, 1440)
+    c1_eth <- rep(0, 1440)
+    c2_btc <- rep(0, 1440)
+    c2_eth <- rep(0, 1440)
+    # Apply uniform crossover to get kids
+    for(j in 1:1440){
+      if(runif(1) <= 0.5){
+        c1_btc[j] <- p1_btc[j]
+        c1_eth[j] <- p1_eth[j]
+        c2_btc[j] <- p2_btc[j]
+        c2_eth[j] <- p2_eth[j]
+      }else{
+        c1_btc[j] <- p2_btc[j]
+        c1_eth[j] <- p2_eth[j]
+        c2_btc[j] <- p1_btc[j]
+        c2_eth[j] <- p1_eth[j]
+      }
+      #Ensure Daily volume constraints met
+      c1_btc <- daily_vol_btc(c1_btc, j)
+      c2_btc <- daily_vol_btc(c2_btc, j)
+      c1_eth <- daily_vol_eth(c1_eth, j)
+      c2_eth <- daily_vol_eth(c2_eth, j)
+    }
+    # Store kids
+    offsprings[2*i-1, ] <- c(c1_btc, c1_eth)
+    offsprings[2*i, ]   <-  c(c2_btc, c2_eth)
+  }
+  return(offsprings)
+}
+
+# n-Point crossover
+crossover_npoint  <- function(parents, n){
+  varsize  <- dim(parents)[2]
+  popsize <- dim(parents)[1]
+  parent_pairs <- matrix(sample(1:popsize), popsize/2, 2)
+  # Initialise offspring
+  offsprings <- matrix(NA, popsize, varsize)
+  for(i in 1:dim(parent_pairs)[1]){
+    # Get parents
+    p1 = parents[parent_pairs[i,][1], ]
+    p2 = parents[parent_pairs[i,][2], ]
+    # Split parents to BTC and ETH 
+    p1_btc <- p1[1:1440]
+    p1_eth <- p1[1441:2880]
+    p2_btc <- p2[1:1440]
+    p2_eth <- p2[1441:2880]
+    # Make kids
+    c1_btc <- rep(0, 1440)
+    c1_eth <- rep(0, 1440)
+    c2_btc <- rep(0, 1440)
+    c2_eth <- rep(0, 1440)
+    npoints <- c(1, sort( sample(1:1440, n, replace = FALSE) ), 1440)
+    # Application of n-Point crossover to get kids: a transfer of 'blocks' (intervals) of genes from parents to kids
+    for (j in 1:(length(npoints) - 1)){
+      if (j %% 2 != 0){
+        c1_btc[npoints[j]:npoints[j+1]] <- p1_btc[npoints[j]:npoints[j+1]]
+        c1_eth[npoints[j]:npoints[j+1]] <- p1_eth[npoints[j]:npoints[j+1]]
+        c2_btc[npoints[j]:npoints[j+1]] <- p2_btc[npoints[j]:npoints[j+1]]
+        c2_eth[npoints[j]:npoints[j+1]] <- p2_eth[npoints[j]:npoints[j+1]]
+      }else{
+        c1_btc[npoints[j]:npoints[j+1]] <- p2_btc[npoints[j]:npoints[j+1]]
+        c1_eth[npoints[j]:npoints[j+1]] <- p2_eth[npoints[j]:npoints[j+1]]
+        c2_btc[npoints[j]:npoints[j+1]] <- p1_btc[npoints[j]:npoints[j+1]]
+        c2_eth[npoints[j]:npoints[j+1]] <- p1_eth[npoints[j]:npoints[j+1]]
+      }
+      # #Ensure Daily volume constraints met
+      c1_btc <- daily_vol_btc(c1_btc, npoints[j]:npoints[j+1])
+      c2_btc <- daily_vol_btc(c2_btc, npoints[j]:npoints[j+1])
+      c1_eth <- daily_vol_eth(c1_eth, npoints[j]:npoints[j+1])
+      c2_eth <- daily_vol_eth(c2_eth, npoints[j]:npoints[j+1])
+    }
+    # Store kids
+    offsprings[2*i-1, ] <- c(c1_btc, c1_eth)
+    offsprings[2*i, ]   <-  c(c2_btc, c2_eth)
+  }
+  return(offsprings)
+}
+
+    
+    
+
+# Mutation (outputs = offspring_mutation)
+# Scramble mutation
+mutation_scramble <- function(offspring_crossover,mutation_rate=0.9){
+  # Initialise mutations
+  mutations <- matrix(NA, dim(offspring_crossover)[1], dim(offspring_crossover)[2])
+  for(i in 1:dim(offspring_crossover)[1]){
+    btctomutate <- offspring_crossover[i, 1:1440]
+    ethtomutate <- offspring_crossover[i, 1441:2880]
+    if(runif(1) <= mutation_rate){
+      # Select two elements
+      picks <- sort(sample(1:1440, 2, replace = FALSE))
+      # Get sub-set of indices
+      temp <- c(picks[1]:picks[2])
+      # Reshuffle 
+      temp <-  sample(temp, length(temp), replace = FALSE)
+      # Add mutation
+      btctomutate[temp] <- btctomutate[picks[1]:picks[2]]
+      ethtomutate[temp] <- ethtomutate[picks[1]:picks[2]]
+      
+      #Ensure liquidity constraints met for BTC:
+      if (sum(btctomutate[temp] > L1[temp]) > 0){
+        num_exceed <- sum(btctomutate[temp] > L1[temp])
+        inds <- which(btctomutate[temp] > L1[temp])
+        for (j in 1:num_exceed){
+          index <-  temp[inds[j]]
+          btctomutate[index] <- L1[index]
+        }
+      }
+      #Ensure liquidity constraints met for ETH:
+      if (sum(ethtomutate[temp] > L2[temp]) > 0){
+        num_exceed <- sum(ethtomutate[temp] > L2[temp])
+        inds <- which(ethtomutate[temp] > L2[temp])
+        for (j in 1:num_exceed){
+          index <-  temp[inds[j]]
+          ethtomutate[index] <- L2[index]
+        }
+      }
+      mutations[i,] <- c(btctomutate, ethtomutate)
+    }else{
+      mutations[i,] <- c(btctomutate, ethtomutate)
+    }
+  }
+  return(mutations)  
+}
+
+#Swap mutation
+mutation_swap <- function(offspring_crossover,mutation_rate=0.05){
+  # Initialise mutations
+  mutations <- matrix(NA, dim(offspring_crossover)[1], dim(offspring_crossover)[2])
+  for(i in 1:dim(offspring_crossover)[1]){
+    btctomutate <- offspring_crossover[i, 1:1440]
+    ethtomutate <- offspring_crossover[i, 1441:2880]
+    if(runif(1) <= mutation_rate){
+      # Select two elements
+      picks <- sort(sample(1:1440, 2, replace = FALSE))
+      # Do the swap
+      btctomutate[c(picks[1], picks[2])] <- btctomutate[c(picks[2], picks[1])]
+      ethtomutate[c(picks[1], picks[2])] <- ethtomutate[c(picks[2], picks[1])]
+      #Ensure liquidity constraints met:
+      if ( btctomutate[picks[1]] > L1[picks[1]] ){ btctomutate[picks[1]] <- L1[picks[1]] }
+      if ( btctomutate[picks[2]] > L1[picks[2]] ){ btctomutate[picks[2]] <- L1[picks[2]] }
+      if ( ethtomutate[picks[1]] > L2[picks[1]] ){ ethtomutate[picks[1]] <- L2[picks[1]] }
+      if ( ethtomutate[picks[2]] > L2[picks[2]] ){ ethtomutate[picks[2]] <- L2[picks[2]] }
+      mutations[i,] <- c(btctomutate, ethtomutate)
+    }else{
+      mutations[i,] <- c(btctomutate, ethtomutate)
+    }
+  }
+  return(mutations)  
+}
+      
+
+
+# Replacement (outputs = new population)
+# Generational replacement
+replace_gen <- function(parents,offspring_mutation){
+  return(offspring_mutation)  
+}
+
+# Steady-state replacement (Elitist replacement)
+replace_ss <- function(parents, offspring_mutation) {
+  # Combine parents and offspring
+  combined_pop <- rbind(parents, offspring_mutation)
+  # Evaluate fitness of combined population
+  fitness_combined <- evaluate_pop(combined_pop, price = price)
+  # Sort combined population by fitness (assuming higher fitness is better)
+  sorted_indices <- order(fitness_combined, decreasing = TRUE)
+  # Select the top individuals to form the new population (retaining the original size of the population)
+  new_pop <- combined_pop[sorted_indices[1:nrow(parents)], ]
+  return(new_pop)
+}
+```
+
+
+
+## GA Example ('comment out' whichever GA operator you do not want to use)
+```{r}
+## Putting it all together
+n_pop = 200
+n_vars = 2880
+# Initial population takes some time to initialize
+this_pop = initial_pop(varsize = n_vars,popsize = n_pop, V1, V2, L1, L2)
+
+
+max_evals = c()
+mean_evals = c()
+n_gen =200
+for(gen in 1:n_gen){
+  evals <- evaluate_pop(pop=this_pop,price = price) 
+  # Selection
+  # next_parents <- select(pop=this_pop,fitness=evals)
+  next_parents <- select_informal(pop=this_pop)
+  # Crossover
+  # offspring_crossover<- crossover_uni(parents=next_parents)
+  offspring_crossover<- crossover_npoint(parents=next_parents, n = 250)
+  # Mutation
+  offspring_mutation <- mutation_scramble(offspring_crossover,mutation_rate=0.05)
+  # offspring_mutation <- mutation_swap(offspring_crossover,mutation_rate=0.05)
+  # Replacement
+  # this_pop <- replace_gen(next_parents, offspring_mutation)
+  this_pop <- replace_ss(next_parents, offspring_mutation)
+
+  max_evals <- c(max_evals,max(evals))
+  mean_evals <- c(mean_evals,mean(evals))
+}
+
+plot(1:n_gen,mean_evals[1:n_gen], ylim=c(min(c(max_evals,mean_evals)),max(c(max_evals,mean_evals))))
+lines(1:n_gen,max_evals[1:n_gen],lty=2)
+```
+## GA Sensitivity Analysis: Comparing 2 Methods per GA Operator
+```{r}
+# Sensitivity Analysis: Just comment out which functions you do not want to use (make sure to keep other operators constant between First and Second for comparability)
+n_pop<-  200
+n_vars <- 2880
+init_pop <- initial_pop(varsize = n_vars,popsize = n_pop, V1, V2, L1, L2)
+
+
+# First 
+this_pop_first <- init_pop
+max_evals_first <- c()
+mean_evals_first <- c()
+n_gen =500
+for(gen in 1:n_gen){
+  evals <- evaluate_pop(pop=this_pop_first,price = price) 
+  # Selection
+  next_parents <- select(pop=this_pop_first,fitness=evals)
+  # next_parents <- select_informal(pop=this_pop_first,fitness=evals)
+  # Crossover
+  offspring_crossover<- crossover_uni(parents=next_parents)
+  # offspring_crossover<- crossover_npoint(parents=next_parents, n = 250)
+  # Mutation
+  offspring_mutation <- mutation_scramble(offspring_crossover,mutation_rate=0.05)
+  # offspring_mutation <- mutation_swap(offspring_crossover,mutation_rate=0.05)
+  # Replacement
+  # this_pop_first <- replace_gen(next_parents, offspring_mutation)
+  this_pop_first <- replace_ss(next_parents, offspring_mutation)
+
+  max_evals_first <- c(max_evals_first,max(evals))
+  mean_evals_first <- c(mean_evals_first,mean(evals))
+}
+
+# Second
+this_pop_second <- init_pop
+max_evals_second <- c()
+mean_evals_second <- c()
+for(gen in 1:n_gen){
+  evals <- evaluate_pop(pop=this_pop_second,price = price) 
+  # Selection
+  # next_parents <- select(pop=this_pop_first,fitness=evals)
+  next_parents <- select_informal(pop=this_pop_second)
+  # Crossover
+  offspring_crossover<- crossover_uni(parents=next_parents)
+  # offspring_crossover<- crossover_npoint(parents=next_parents, n = 250)
+  # Mutation
+  offspring_mutation <- mutation_scramble(offspring_crossover,mutation_rate=0.05)
+  # offspring_mutation <- mutation_swap(offspring_crossover,mutation_rate=0.05)
+  # Replacement
+  # this_pop_second <- replace_gen(next_parents, offspring_mutation)
+  this_pop_second <- replace_ss(next_parents, offspring_mutation)
+
+  max_evals_second <- c(max_evals_second,max(evals))
+  mean_evals_second <- c(mean_evals_second,mean(evals))
+}
+
+# Convergence Plots
+gen <- 200
+ plot(mean_evals_first,
+     ylim=c(30000, 230000), xlim= c(0, gen), col = 'blue', pch =20, ylab = 'Maximum Profit f(x)', xlab = 'Iteration')
+lines(max_evals_first,lty=2, col = 'blue')
+
+points(mean_evals_second, col = 'red', pch = 20)
+lines(max_evals_second,lty=2, col = 'red')
+legend('bottomright', legend = c("Uniform", "n-Point"), col = c("blue", "red"), 
+       pch = 20)
+
+
+# BTC Plots
+time_labels <- sprintf("%02d:%02d", (1:1440 - 1) %/% 60, (1:1440 - 1) %% 60)
+plot.ts(this_pop_second[1, 1:1440], xaxt = "n", xlab = '', ylab = "BTC Amount", col ='red')
+axis(1, at = seq(1, 1440, by = 60), labels = time_labels[seq(1, 1440, by = 60)], las = 2)
+
+# ETH Plots
+plot.ts(this_pop_second[1, 1441:2880], xaxt = "n", xlab = '', ylab = "ETH Amount", col ='red')
+axis(1, at = seq(1, 1440, by = 60), labels = time_labels[seq(1, 1440, by = 60)], las = 2)
+```
+
+## GA Sensitivity Analysis: Varying n for n-Point Crossover
+```{r}
+# Sensitivity of n in n-Point crossover
+n_pop<-  500
+n_vars <- 2880
+init_pop <- initial_pop(varsize = n_vars,popsize = n_pop, V1, V2, L1, L2)
+n_gen =1000
+  
+## Vary n
+nlist <- seq(100, 1440, 100)
+mean_mat <- matrix(NA, nrow = length(nlist), ncol = n_gen)
+max_mat <- matrix(NA, nrow = length(nlist), ncol = n_gen)
+i <- 1
+for (n in nlist){
+  this_pop <- init_pop
+  max_evals <- c()
+  mean_evals <- c()
+  for(gen in 1:n_gen){
+    evals <- evaluate_pop(pop=this_pop,price = price) 
+    # Selection
+    next_parents <- select(pop=this_pop,fitness=evals)
+    # next_parents <- select_informal(pop=this_pop,fitness=evals)
+    # Crossover
+    # offspring_crossover<- crossover_uni(parents=next_parents)
+    offspring_crossover<- crossover_npoint(parents=next_parents, n = n)
+    # Mutation
+    offspring_mutation <- mutation_scramble(offspring_crossover,mutation_rate=0.05)
+    # offspring_mutation <- mutation_swap(offspring_crossover,mutation_rate=0.05)
+    # Replacement
+    # this_pop <- replace_gen(next_parents, offspring_mutation)
+    this_pop <- replace_ss(next_parents, offspring_mutation)
+    
+    max_evals <- c(max_evals,max(evals))
+    mean_evals <- c(mean_evals,mean(evals))
+  }
+  mean_mat[i, ] <- mean_evals
+  max_mat[i, ] <- max_evals
+  i <- i+1
+}
+
+# Convergence plots
+gen <-150
+colors <- rainbow(14)  
+plot.new() 
+plot.window(xlim = c(0, gen), ylim = c(30000, 230000))
+title(ylab = 'Maximum Profit f(x)', xlab = 'Iteration')
+for (i in 1:14) {
+  points(mean_mat[i, ], col = colors[i], pch = 20)
+  # lines(max_mat[i, ], lty = 2, col = colors[i])
+}
+axis(1) 
+axis(2)  
+box()    
+legend("bottomright", legend =paste('n=', nlist), col = colors, pch = 20, lty = 2, cex = 0.5)
+
+
+# Plots at convergence
+plot(nlist, mean_mat[, 1000], type = "p", xlab = 'n', ylab = 'Maximum Profit f(x)', pch = 20, col = 'red')
+lines(nlist, mean_mat[, 1000], lty = 2, col = 'red')
+axis(1, at = nlist, labels = nlist)
+```
+
+## GA Sensitivity Analysis: Varying Mutation Rate for Sramble Mutation (Swap Mutation may also be used)
+```{r}
+# Sensitivity of Mutation Rate of Scramble Mutation
+n_pop<-  500
+n_vars <- 2880
+init_pop <- initial_pop(varsize = n_vars,popsize = n_pop, V1, V2, L1, L2)
+n_gen =1000
+  
+## Vary mutation rate
+mutlist <- seq(0.1, 0.9, 0.1)
+mean_mat <- matrix(NA, nrow = length(mutlist), ncol = n_gen)
+max_mat <- matrix(NA, nrow = length(mutlist), ncol = n_gen)
+i <- 1
+for (mut in mutlist){
+  this_pop <- init_pop
+  max_evals <- c()
+  mean_evals <- c()
+  for(gen in 1:n_gen){
+    evals <- evaluate_pop(pop=this_pop,price = price) 
+    # Selection
+    next_parents <- select(pop=this_pop,fitness=evals)
+    # next_parents <- select_informal(pop=this_pop,fitness=evals)
+    # Crossover
+    offspring_crossover<- crossover_uni(parents=next_parents)
+    # offspring_crossover<- crossover_npoint(parents=next_parents, n = n)
+    # Mutation
+    offspring_mutation <- mutation_scramble(offspring_crossover,mutation_rate=mut)
+    # offspring_mutation <- mutation_swap(offspring_crossover,mutation_rate=0.05)
+    # Replacement
+    # this_pop <- replace_gen(next_parents, offspring_mutation)
+    this_pop <- replace_ss(next_parents, offspring_mutation)
+    
+    max_evals <- c(max_evals,max(evals))
+    mean_evals <- c(mean_evals,mean(evals))
+  }
+  mean_mat[i, ] <- mean_evals
+  max_mat[i, ] <- max_evals
+  i <- i+1
+}
+
+
+# Convergence plots
+gen <-150
+colors <- rainbow(9)  
+plot.new() 
+plot.window(xlim = c(0, gen), ylim = c(30000, 230000))
+title(ylab = 'Maximum Profit f(x)', xlab = 'Iteration')
+for (i in 1:9) {
+  points(mean_mat[i, ], col = colors[i], pch = 20)
+  # lines(max_mat[i, ], lty = 2, col = colors[i])
+}
+axis(1) 
+axis(2)  
+box()    
+legend("bottomright", legend =paste(mutlist, 'Mutation Rate:'), col = colors, pch = 20, lty = 2, cex = 0.5)
+
+
+# Plots of means at convergence
+plot(mutlist, mean_mat[, 200], type = "p", xlab = 'Mutation Rate', ylab = 'Maximum Profit f(x)', pch = 20, col = 'red')
+lines(mutlist, mean_mat[, 200], lty = 2, col = 'red')
+axis(1, at = mutlist, labels = mutlist)
+```
+
+## GA Sensitivity Analysis: Varying Population Size
+```{r}
+n_vars = 2880
+# Varying the pop size here
+poplist <- seq(100, 1000, 100)
+n_gen =1000
+max_evals = matrix(NA, nrow = length(poplist), ncol = n_gen)
+mean_evals = matrix(NA, nrow = length(poplist), ncol = n_gen)
+i<- 1
+for (pop in poplist){
+  this_pop <- initial_pop(varsize = n_vars,popsize = pop, V1, V2, L1, L2) #Initial pop size changes 
+  for(gen in 1:n_gen){
+    evals <- evaluate_pop(pop=this_pop,price = price) 
+    # Selection
+    next_parents <- select(pop=this_pop,fitness=evals)
+    # next_parents <- select_informal(pop=this_pop)
+    # Crossover
+    # offspring_crossover<- crossover_uni(parents=next_parents)
+    offspring_crossover<- crossover_npoint(parents=next_parents, n = 250)
+    # Mutation
+    offspring_mutation <- mutation_scramble(offspring_crossover,mutation_rate=0.05)
+    # offspring_mutation <- mutation_swap(offspring_crossover,mutation_rate=0.05)
+    # Replacement
+    # this_pop <- replace_gen(next_parents, offspring_mutation)
+    this_pop <- replace_ss(next_parents, offspring_mutation)
+    
+    max_evals[i, gen] <- max(evals)
+    mean_evals[i, gen] <- mean(evals)
+  }
+  i <- i+1
+}
+
+
+uptill <- 150
+plot(1:uptill,mean_evals[1,1:uptill ], ylim=c(min(c(max_evals,mean_evals)),max(c(max_evals,mean_evals))), type = 'n', xlab = 'Iteration', ylab = 'Maximum Profit f(x)',)
+for (i in 1:10){
+  lines(1:uptill,mean_evals[i, 1:uptill], col = i, lwd = 2)
+}
+legend("bottomright", legend = paste("Population Size:", poplist), col = 1:10, lwd = 2, cex = 0.6)
+```
