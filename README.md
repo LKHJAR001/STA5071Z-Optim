@@ -1,1 +1,6 @@
 Associated files for STA5071Z Optimisation chosen project: Optimising Cryptocurrency Arbitrage Opportunities 
+
+Abstract:
+
+In this study, we aim to explore various optimisation methods to determine the best approach for exploiting arbitrage opportunities between two distinct cryptocurrencies traded on different exchanges. Arbitrage, the practice of capitalizing on price differences between markets, poses several challenges, including determining the optimal timing and the amount to of the particular cryptocurrency to arbitrage in order to maximize profits. We address these questions by formulating them as an optimization problem. Our approach combines the rigor of Linear Programming, which we extend into Goal Programming to handle multiple objectives, with the flexibility of heuristic optimization techniques, specifically Simulated Annealing and Genetic Algorithms. Through these methods, we investigate when and how much one should arbitrage to achieve the most profitable outcome.
+
